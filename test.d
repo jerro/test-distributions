@@ -2,82 +2,253 @@ import std.stdio, std.mathspecial, std.algorithm, std.range, std.conv,
     std.traits, std.numeric, std.random, std.typecons, std.typetuple,
     std.parallelism, std.getopt;
 
-void accuracy()
+import dstats.all;
+
+struct SimpleNormal(T)
 {
-    enum nchunks = 100;
-    enum samplesPerChunk = 10L ^^ 9 / nchunks;
-    
-    @property zero(){ return new long[800]; }
-    
-    static auto accumulator(long[] a, long[] b)
-    {
-        auto r = b.dup;
-        r[] += a[];
-        return r;
-    }
+    T mean = 0;
+    T sigma = 1;
+    T cached;
+    bool haveCached;
 
-    auto mapper(int i)
+    auto sample(Rng)(ref Rng rng) @system
     {
-        auto r = zero;
-        auto rng = Xorshift128(unpredictableSeed);
-        foreach(_; 0 .. samplesPerChunk)
+        if(haveCached)
         {
-            //auto x = normal(8.0, 1.0, rng);
-            auto x = exponential(0.5, rng);
-            //x = x > 0 && x < 16 ? x : 0;
-            r[cast(int)(50 * x)] ++;
+            haveCached = false;
+            return cached;
         }
-        return r;
+        else
+        {
+            haveCached = true;
+            while(true)
+            {
+                auto u = randomFloat!T(rng);
+                auto v = randomFloat!T(rng);
+                auto s = u * u + v * v;
+
+                if(s > 1)
+                    continue;
+
+                import core.stdc.math;
+                auto k = sqrt(- 2 * core.stdc.math.log(s) / s) * sigma;
+
+                cached = k * u + mean;
+                return   k * v + mean;
+            }
+        }
     }
 
-    auto chunks = iota(nchunks).map!mapper();
-    auto r = taskPool.reduce!accumulator(zero, chunks);
-  
-    double sum = r.reduce!"a+b";
-    auto d = new double[r.length];
-    foreach(i, _; r)
-        d[i] = r[i] / sum;
-    writeln(d);
-    stderr.writeln(sum);
+    auto cdf(T x)
+    {
+        return normalCDF(x, mean, sigma); 
+    } 
+}
+    
+auto simpleNormal(T)(T mean, T sigma)
+{
+    return SimpleNormal!T(mean, sigma, T.init, false);
 }
 
-void speed()
+struct NormalDistTest(T, size_t nlayers)
 {
-    auto nsamples = 1_000_000_000L;
+    enum T mean = 0;
+    enum T sigma = 1;
+    NormalDist!(T, nlayers) dist;
 
-    //auto rng = Mt19937(1);
-    auto rng = Xorshift128(unpredictableSeed);
+    static auto opCall()
+    {
+        NormalDistTest r;
+        r.dist = NormalDist!(T, nlayers)(mean, sigma);
+        return r;
+    }
 
-    auto sum = 0.0;
+    T sample(Rng)(ref Rng rng)
+    {
+        return dist.get(rng);   
+    }
+
+    T cdf(T x)
+    {
+        return normalCDF(x, mean, sigma); 
+    }
+
+    T pdfMax()
+    {
+        return 1 / (sigma * sqrt(2 * PI));
+    } 
+}
+
+struct Bins(T)
+{
+    T low;
+    T dx;
+    T invDx;
+    size_t n;
+   
+    this(T low, T high, size_t n)
+    {
+        this.low = low;
+        this.n = n;
+        dx = (high - low) / (n - 2);
+        invDx = 1 / dx;
+    }
+ 
+    T lowerBound(size_t i)
+    {
+        assert(i != 0, "The first bin does not have a lower bound!");
+        assert(i < n, "Bin index to high.");
+        return low + (i - 1) * dx;
+    }
+
+    size_t index(T x)
+    {
+        return max(0, min(cast(size_t)((x - low + dx) * invDx), n - 1));
+    }
+}
+
+template sampleDistribution(DistTest, Rng)
+{
+    alias typeof(DistTest.init.sample(Rng.init)) T;
+    
+    auto sampleDistribution(ulong nsamples, Bins!T bins)
+    {
+        static auto zero(size_t nbins){ return new uint[nbins]; }
+
+        static uint[] mapper(Tuple!(ulong, Bins!T) arg)
+        {
+            auto r = zero(arg[1].n);
+            auto rng = Rng(unpredictableSeed);
+            auto dist = DistTest();
+
+            foreach(_; 0 .. arg[0])
+                r[arg[1].index(dist.sample(rng))] ++;
+            
+            return r;
+        }
+
+        /*enum  nchunks = 4;
+        ulong samplesPerChunk = nsamples / nchunks;
+
+        static auto reducer(const(uint)[] a, const(uint)[] b)
+        {
+            auto r = b.dup;
+            r[] += a[];
+            return r;
+        }
+
+        auto args = tuple(samplesPerChunk, bins).repeat(nchunks).array;
+        args[0][0] += nsamples - nchunks * samplesPerChunk; 
+        auto chunks = taskPool.amap!mapper(args);
+        auto r = reduce!reducer(zero(bins.n), chunks);
+        return r;*/
+
+        return mapper(tuple(nsamples, bins));
+    }
+}
+
+auto autoFindRoot(T)(scope T delegate(T) f)
+{
+    T a = 1;
+    while(f(a) < 0)
+        a += a;
+
+    T b = -1;
+    while(f(b) > 0)
+        b += b;
+
+    return findRoot(f, a, b); 
+}
+
+void goodnessOfFit(T, DistTest, Rng)(ulong nsamples)
+{
+    auto dt = DistTest();
+    auto nEqualBins = to!size_t(nsamples ^^ (3.0 / 5.0));
+    T equalBinArea = to!T(1) / nEqualBins;
+    T binWidth = equalBinArea / dt.pdfMax();
+    T high = autoFindRoot(delegate (T x) => dt.cdf(x) - (1 - equalBinArea));
+    
+    auto bins = Bins!T(-high, high, to!size_t(ceil(2 * high / binWidth)));
+
+    auto dist = sampleDistribution!(DistTest, Rng)(nsamples, bins);
+
+    auto getCdf = (size_t i) => 
+        i == 0 ? 0 : 
+        i == bins.n ? 1 : dt.cdf(bins.lowerBound(i));
+
+    T chiSq = 0;
+    size_t nbins = 0;
+    for(size_t i; i < bins.n;)
+    {
+        T area = 0;
+        uint n = 0;
+        for(; area < equalBinArea && i < bins.n; i++)
+        {
+            area += getCdf(i + 1) - getCdf(i);
+            n += dist[i];
+        }
+        
+        T expected = area * nsamples;
+        chiSq += (n - expected) ^^ 2 / expected; 
+        nbins++;
+    }
+    
+    stderr.writeln(chiSq);
+    stderr.writeln(chiSquareCDFR(chiSq, nbins - 1));
+}
+
+void error(T, DistTest, Rng)(ulong nsamples)
+{
+    auto dist = sampleDistribution!(DistTest, Rng)(nsamples);
+   
+    auto maxError =  double.min;
+    auto dt = DistTest();
+    foreach(i, _; dist)
+    {
+        auto expected = 
+            dt.cdf((i + 1) * maxX / nBuckets) - dt.cdf(i * maxX / nBuckets);
+       
+        auto nExpected = expected * nsamples;
+        if(nExpected < 100)
+            continue;
+
+        auto sigma = sqrt(nExpected) / nsamples;
+        maxError = max(maxError, abs(expected - dist[i]) / sigma);
+    }
+
+    writeln(maxError);
+}
+
+void speed(T, DistTest, Rng)(ulong nsamples)
+{
+    auto rng = Rng(unpredictableSeed);
+
+    auto dist = DistTest();
+
+    T sum = 0;
     foreach(i; 0 .. nsamples)
     {
-        //auto x = cauchy(8.0, 0.2, rng); 
-        //auto x = normal(8.0, 1.0, rng);
-        auto x = exponential(0.5, rng);
-        //auto x = unif!double(rng);
-        //writeln(x);
-        //dist[cast(int)(50 * x)] ++;
+        auto x = dist.sample(rng);
         sum += x; 
     }
     writeln(sum);
 } 
 
-void plot()()
+void plotLayers()()
 {
     alias double T;
-    //mixin Cauchy!T;
     mixin Normal!T;
-    alias ZigguratState!(func, integ, deriv, 0.5, 32) Z;
+    alias ZigguratTable!(f, fint, fderiv, 0.5, 32) Z;
 
     auto x = iota(1000).map!(a => 0.01 * a).array;
-    auto y = x.map!func().array;
+    auto y = x.map!f().array;
     
     auto layerx = (size_t i) =>
         i == 0 ? 0 :
         i == Z.nlayers ? Z.tailX : 
         i == Z.nlayers + 1 ? T.max : Z.layers[Z.nlayers - i].x;
 
-    auto layery = (size_t i) => i == Z.nlayers + 1 ? 0 : func(layerx(i));
+    auto layery = (size_t i) => i == Z.nlayers + 1 ? 0 : f(layerx(i));
     
     auto ymin = new T[x.length];
     auto ymax = ymin.dup;
@@ -105,12 +276,25 @@ void plot()()
 
 void main(string[] args)
 {
-    bool testSpeed; 
-    getopt(args, "s", &testSpeed);
-    
+    bool testSpeed;
+    bool testError;
+    getopt(args, "s", &testSpeed, "e", &testError);
+   
+    auto nsamples = args.length > 1 ? 
+        to!ulong(args[1]) * 1000 : 1000_000_000L;
+   
+    alias float T; 
+    alias NormalDistTest!(T, 128) DistTest;
+    alias Xorshift128 Rng;
+    //alias Mt19937 Rng;
+
     if(testSpeed)
-        speed();
+        speed!(T, DistTest, Rng)(nsamples);
+    //else if(testError)
+    //    error!(float, DistTest, Rng)(nsamples);
     else
-        accuracy();
+        distribution!(T, DistTest, Rng)(nsamples);
+
+    //plotLayers();
 }
 
