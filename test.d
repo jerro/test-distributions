@@ -105,14 +105,33 @@ template histogram(DistTest, Rng)
 
 void goodnessOfFit(T, DistTest, Rng)(ulong nsamples)
 {
-    auto dt = DistTest();
     auto nbins = to!size_t(nsamples ^^ (3.0 / 5.0));
     T expected = to!T(nsamples) / nbins;
     auto hist = new uint[nbins];
-    
-    auto rng = Rng(unpredictableSeed);
-    foreach(i; 0 .. nsamples)
-        hist[to!size_t(dt.cdf(dt.sample(rng)) * nbins)]++;
+   
+    static void worker(uint[] hist, size_t nbins, size_t nsamples)
+    {  
+        auto rng = Rng(unpredictableSeed);
+        auto dt = DistTest();
+        foreach(i; 0 .. nsamples)
+            hist[to!size_t(dt.cdf(dt.sample(rng)) * nbins)]++;
+    }
+
+    import core.thread;
+
+    enum nworkers = 4;
+    auto histograms = 
+        (nsamples / nworkers).repeat(nworkers).map!"new uint[a]".array;
+
+    foreach(h; histograms)
+    (h){
+        (new Thread(() => worker(h, nbins, nsamples / nworkers))).start(); 
+    }(h);
+
+    thread_joinAll();
+
+    foreach(h; histograms)
+        hist[] += h[]; 
 
     stderr.writeln(nbins); 
     writeln(chiSquareFit(hist, repeat(1.0)));
