@@ -99,99 +99,23 @@ template histogram(DistTest, Rng)
             return r;
         }
 
-        /*enum  nchunks = 4;
-        ulong samplesPerChunk = nsamples / nchunks;
-
-        static auto reducer(const(uint)[] a, const(uint)[] b)
-        {
-            auto r = b.dup;
-            r[] += a[];
-            return r;
-        }
-
-        auto args = tuple(samplesPerChunk, bins).repeat(nchunks).array;
-        args[0][0] += nsamples - nchunks * samplesPerChunk; 
-        auto chunks = taskPool.amap!mapper(args);
-        auto r = reduce!reducer(zero(bins.n), chunks);
-        return r;*/
-
         return mapper(tuple(nsamples, bins));
     }
-}
-
-auto autoFindRoot(T)(scope T delegate(T) f)
-{
-    T a = 1;
-    while(f(a) < 0)
-        a += a;
-
-    T b = -1;
-    while(f(b) > 0)
-        b += b;
-
-    return findRoot(f, a, b); 
 }
 
 void goodnessOfFit(T, DistTest, Rng)(ulong nsamples)
 {
     auto dt = DistTest();
-    auto nEqualBins = to!size_t(nsamples ^^ (3.0 / 5.0));
-    T equalBinArea = to!T(1) / nEqualBins;
-    T binWidth = equalBinArea / dt.pdfMax();
-    T high = autoFindRoot(delegate (T x) => dt.cdf(x) - (1 - equalBinArea));
+    auto nbins = to!size_t(nsamples ^^ (3.0 / 5.0));
+    T expected = to!T(nsamples) / nbins;
+    auto hist = new uint[nbins];
     
-    auto bins = Bins!T(-high, high, to!size_t(ceil(2 * high / binWidth)));
+    auto rng = Rng(unpredictableSeed);
+    foreach(i; 0 .. nsamples)
+        hist[to!size_t(dt.cdf(dt.sample(rng)) * nbins)]++;
 
-    auto dist = histogram!(DistTest, Rng)(nsamples, bins);
-
-    auto getCdf = (size_t i) => 
-        i == 0 ? 0 : 
-        i == bins.n ? 1 : dt.cdf(bins.lowerBound(i));
-
-    T chiSq = 0;
-    size_t nbins = 0;
-    for(size_t i = 0; i < bins.n;)
-    {
-        auto iprev = i;
-        uint n = 0;
-        T startCdf = getCdf(i);
-        T cdf = startCdf;
-        for(; cdf < startCdf + equalBinArea && i < bins.n; i++)
-        {
-            cdf = getCdf(i + 1);
-            n += dist[i];
-        }
-      
-        T expected = (cdf - startCdf) * nsamples;
-        chiSq += (n - expected) ^^ 2 / expected; 
-        nbins++;
-    }
-    
-    stderr.writeln(nbins);
-    stderr.writeln(chiSq);
-    stderr.writeln(chiSquareCDFR(chiSq, nbins - 1));
-}
-
-void error(T, DistTest, Rng)(ulong nsamples)
-{
-    auto dist = sampleDistribution!(DistTest, Rng)(nsamples);
-   
-    auto maxError =  double.min;
-    auto dt = DistTest();
-    foreach(i, _; dist)
-    {
-        auto expected = 
-            dt.cdf((i + 1) * maxX / nBuckets) - dt.cdf(i * maxX / nBuckets);
-       
-        auto nExpected = expected * nsamples;
-        if(nExpected < 100)
-            continue;
-
-        auto sigma = sqrt(nExpected) / nsamples;
-        maxError = max(maxError, abs(expected - dist[i]) / sigma);
-    }
-
-    writeln(maxError);
+    stderr.writeln(nbins); 
+    writeln(chiSquareFit(hist, repeat(1.0)));
 }
 
 void speed(T, DistTest, Rng)(ulong nsamples)
@@ -209,46 +133,6 @@ void speed(T, DistTest, Rng)(ulong nsamples)
     writeln(sum);
 } 
 
-void plotLayers()()
-{
-    alias double T;
-    mixin Normal!T;
-    alias ZigguratTable!(f, fint, fderiv, 0.5, 32) Z;
-
-    auto x = iota(1000).map!(a => 0.01 * a).array;
-    auto y = x.map!f().array;
-    
-    auto layerx = (size_t i) =>
-        i == 0 ? 0 :
-        i == Z.nlayers ? Z.tailX : 
-        i == Z.nlayers + 1 ? T.max : Z.layers[Z.nlayers - i].x;
-
-    auto layery = (size_t i) => i == Z.nlayers + 1 ? 0 : f(layerx(i));
-    
-    auto ymin = new T[x.length];
-    auto ymax = ymin.dup;
-
-    int layer = 0;
-    foreach(i, _; x)
-    {
-        if(x[i] > layerx(layer + 1))
-            layer++;
-        
-        ymin[i] = layery(layer + 1);
-        ymax[i] = layery(layer);
-        
-        writefln("%s\t%s\t%s\t%s", x[i], ymin[i], ymax[i], y[i]);
-    }
-
-    import plot2kill.all;
-    
-    Figure()
-        .addPlot(LineGraph(x, y))
-        .addPlot(LineGraph(x, ymin))
-        .addPlot(LineGraph(x, ymax))
-        .showAsMain();
-}
-
 void main(string[] args)
 {
     bool testSpeed;
@@ -258,7 +142,7 @@ void main(string[] args)
     auto nsamples = args.length > 1 ? 
         to!ulong(args[1]) * 1000 : 1000_000_000L;
    
-    alias real T; 
+    alias double T; 
     alias NormalDistTest!(T, 128) DistTest;
     //alias DstatsNormalTest!T DistTest;
     //alias Xorshift128 Rng;
@@ -266,11 +150,7 @@ void main(string[] args)
 
     if(testSpeed)
         speed!(T, DistTest, Rng)(nsamples);
-    //else if(testError)
-    //    error!(float, DistTest, Rng)(nsamples);
     else
         goodnessOfFit!(T, DistTest, Rng)(nsamples);
-
-    //plotLayers();
 }
 
