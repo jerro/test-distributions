@@ -4,50 +4,30 @@ import std.stdio, std.mathspecial, std.algorithm, std.range, std.conv,
 
 import dstats.all;
 
-struct SimpleNormal(T)
+mixin template NormalMixin()
 {
-    T mean = 0;
-    T sigma = 1;
-    T cached;
-    bool haveCached;
-
-    auto sample(Rng)(ref Rng rng) @system
+    T pdfMax()
     {
-        if(haveCached)
-        {
-            haveCached = false;
-            return cached;
-        }
-        else
-        {
-            haveCached = true;
-            while(true)
-            {
-                auto u = randomFloat!T(rng);
-                auto v = randomFloat!T(rng);
-                auto s = u * u + v * v;
+        return 1 / (sigma * sqrt(2 * PI));
+    } 
 
-                if(s > 1)
-                    continue;
-
-                import core.stdc.math;
-                auto k = sqrt(- 2 * core.stdc.math.log(s) / s) * sigma;
-
-                cached = k * u + mean;
-                return   k * v + mean;
-            }
-        }
-    }
-
-    auto cdf(T x)
+    T cdf(T x)
     {
         return normalCDF(x, mean, sigma); 
     } 
 }
-    
-auto simpleNormal(T)(T mean, T sigma)
+
+struct DstatsNormalTest(T)
 {
-    return SimpleNormal!T(mean, sigma, T.init, false);
+    T mean = 0;
+    T sigma = 1;
+
+    T sample(Rng)(ref Rng rng) @system
+    {
+        return rNorm(mean, sigma, rng);
+    }
+    
+    mixin NormalMixin!();
 }
 
 struct NormalDistTest(T, size_t nlayers)
@@ -65,18 +45,10 @@ struct NormalDistTest(T, size_t nlayers)
 
     T sample(Rng)(ref Rng rng)
     {
-        return dist.get(rng);   
+        return dist.get(rng) * 1;   
     }
 
-    T cdf(T x)
-    {
-        return normalCDF(x, mean, sigma); 
-    }
-
-    T pdfMax()
-    {
-        return 1 / (sigma * sqrt(2 * PI));
-    } 
+    mixin NormalMixin!();
 }
 
 struct Bins(T)
@@ -103,15 +75,15 @@ struct Bins(T)
 
     size_t index(T x)
     {
-        return max(0, min(cast(size_t)((x - low + dx) * invDx), n - 1));
+        return max(0, min(cast(ptrdiff_t)((x - low + dx) * invDx), n - 1));
     }
 }
 
-template sampleDistribution(DistTest, Rng)
+template histogram(DistTest, Rng)
 {
     alias typeof(DistTest.init.sample(Rng.init)) T;
     
-    auto sampleDistribution(ulong nsamples, Bins!T bins)
+    auto histogram(ulong nsamples, Bins!T bins)
     {
         static auto zero(size_t nbins){ return new uint[nbins]; }
 
@@ -170,7 +142,7 @@ void goodnessOfFit(T, DistTest, Rng)(ulong nsamples)
     
     auto bins = Bins!T(-high, high, to!size_t(ceil(2 * high / binWidth)));
 
-    auto dist = sampleDistribution!(DistTest, Rng)(nsamples, bins);
+    auto dist = histogram!(DistTest, Rng)(nsamples, bins);
 
     auto getCdf = (size_t i) => 
         i == 0 ? 0 : 
@@ -178,21 +150,24 @@ void goodnessOfFit(T, DistTest, Rng)(ulong nsamples)
 
     T chiSq = 0;
     size_t nbins = 0;
-    for(size_t i; i < bins.n;)
+    for(size_t i = 0; i < bins.n;)
     {
-        T area = 0;
+        auto iprev = i;
         uint n = 0;
-        for(; area < equalBinArea && i < bins.n; i++)
+        T startCdf = getCdf(i);
+        T cdf = startCdf;
+        for(; cdf < startCdf + equalBinArea && i < bins.n; i++)
         {
-            area += getCdf(i + 1) - getCdf(i);
+            cdf = getCdf(i + 1);
             n += dist[i];
         }
-        
-        T expected = area * nsamples;
+      
+        T expected = (cdf - startCdf) * nsamples;
         chiSq += (n - expected) ^^ 2 / expected; 
         nbins++;
     }
     
+    stderr.writeln(nbins);
     stderr.writeln(chiSq);
     stderr.writeln(chiSquareCDFR(chiSq, nbins - 1));
 }
@@ -283,17 +258,18 @@ void main(string[] args)
     auto nsamples = args.length > 1 ? 
         to!ulong(args[1]) * 1000 : 1000_000_000L;
    
-    alias float T; 
+    alias real T; 
     alias NormalDistTest!(T, 128) DistTest;
-    alias Xorshift128 Rng;
-    //alias Mt19937 Rng;
+    //alias DstatsNormalTest!T DistTest;
+    //alias Xorshift128 Rng;
+    alias Mt19937 Rng;
 
     if(testSpeed)
         speed!(T, DistTest, Rng)(nsamples);
     //else if(testError)
     //    error!(float, DistTest, Rng)(nsamples);
     else
-        distribution!(T, DistTest, Rng)(nsamples);
+        goodnessOfFit!(T, DistTest, Rng)(nsamples);
 
     //plotLayers();
 }
