@@ -120,8 +120,7 @@ void goodnessOfFit(T, DistTest, Rng)(ulong nsamples)
     import core.thread;
 
     enum nworkers = 4;
-    auto histograms = 
-        (nsamples / nworkers).repeat(nworkers).map!"new uint[a]".array;
+    auto histograms = nbins.repeat(nworkers).map!"new uint[a]".array;
 
     foreach(h; histograms)
     (h){
