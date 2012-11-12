@@ -19,8 +19,8 @@ mixin template NormalMixin()
 
 struct DstatsNormalTest(T)
 {
-    T mean = 0;
-    T sigma = 1;
+    enum T mean = 0;
+    enum T sigma = 1;
 
     T sample(Rng)(ref Rng rng) @system
     {
@@ -30,22 +30,33 @@ struct DstatsNormalTest(T)
     mixin NormalMixin!();
 }
 
-struct NormalDistTest(T, size_t nlayers)
+struct NormalTest(T, alias Engine, bool useGlobal)
 {
     enum T mean = 0;
     enum T sigma = 1;
-    NormalDist!(T, nlayers) dist;
 
-    static auto opCall()
+    static if(useGlobal)
     {
-        NormalDistTest r;
-        r.dist = NormalDist!(T, nlayers)(mean, sigma);
-        return r;
+        T sample(Rng)(ref Rng rng)
+        {
+            return normal!Engine(mean, sigma, rng);   
+        }
     }
-
-    T sample(Rng)(ref Rng rng)
+    else
     {
-        return dist.get(rng) * 1;   
+        Normal!(T, Engine) dist;
+
+        static auto opCall()
+        {
+            NormalTest r;
+            r.dist = normalRNG!Engine(mean, sigma);
+            return r;
+        }
+
+        T sample(Rng)(ref Rng rng)
+        {
+            return dist.opCall(rng);   
+        }
     }
 
     mixin NormalMixin!();
@@ -161,10 +172,11 @@ void main(string[] args)
         to!ulong(args[1]) * 1000 : 1000_000_000L;
    
     alias double T; 
-    alias NormalDistTest!(T, 128) DistTest;
-    //alias DstatsNormalTest!T DistTest;
-    //alias Xorshift128 Rng;
-    alias Mt19937 Rng;
+    alias NormalZigguratEngine64 Engine;
+    //alias NormalBoxMullerEngine Engine;
+    alias NormalTest!(T, Engine, true) DistTest;
+    alias Xorshift128 Rng;
+    //alias Mt19937 Rng;
 
     if(testSpeed)
         speed!(T, DistTest, Rng)(nsamples);
