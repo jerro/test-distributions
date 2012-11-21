@@ -6,11 +6,6 @@ import dstats.all;
 
 mixin template NormalMixin()
 {
-    T pdfMax()
-    {
-        return 1 / (sigma * sqrt(2 * PI));
-    } 
-
     T cdf(T x)
     {
         return normalCDF(x, mean, sigma); 
@@ -98,14 +93,16 @@ auto goodnessOfFit(T, DistTest, Rng)(ulong samples)
 {
     double sum = 0;
     double n = 0;
+    auto avg = () => sum / n;
     do
     {
         sum += log10(goodnessOfFitImpl!(T, DistTest, Rng)(samples));
         n += 1;
+        stderr.writefln("current average of log10(p): %s", avg());
     }
-    while(sum / n > -6 && sum / n < -1);
+    while(avg() > -6 && avg() < -1);
 
-    return 10 ^^ (sum / n);
+    return 10 ^^ avg();
 }
 
 void speed(T, DistTest, Rng)(ulong nsamples)
@@ -118,7 +115,7 @@ void speed(T, DistTest, Rng)(ulong nsamples)
     foreach(i; 0 .. nsamples)
     {
         auto x = dist.sample(rng);
-        sum += x; 
+        sum += x;
     }
     writeln(sum);
 } 
@@ -132,7 +129,7 @@ void main(string[] args)
     auto nsamples = args.length > 1 ? 
         to!ulong(args[1]) * 1000 : 1000_000_000L;
    
-    alias double T; 
+    alias float T; 
     alias NormalZigguratEngine64 Engine;
     //alias NormalBoxMullerEngine Engine;
     alias NormalTest!(T, Engine, true) DistTest;
