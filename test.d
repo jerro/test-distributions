@@ -62,58 +62,6 @@ struct NormalTest(T, alias Engine, bool useGlobal)
     mixin NormalMixin!();
 }
 
-struct Bins(T)
-{
-    T low;
-    T dx;
-    T invDx;
-    size_t n;
-   
-    this(T low, T high, size_t n)
-    {
-        this.low = low;
-        this.n = n;
-        dx = (high - low) / (n - 2);
-        invDx = 1 / dx;
-    }
- 
-    T lowerBound(size_t i)
-    {
-        assert(i != 0, "The first bin does not have a lower bound!");
-        assert(i < n, "Bin index to high.");
-        return low + (i - 1) * dx;
-    }
-
-    size_t index(T x)
-    {
-        return max(0, min(cast(ptrdiff_t)((x - low + dx) * invDx), n - 1));
-    }
-}
-
-template histogram(DistTest, Rng)
-{
-    alias typeof(DistTest.init.sample(Rng.init)) T;
-    
-    auto histogram(ulong nsamples, Bins!T bins)
-    {
-        static auto zero(size_t nbins){ return new uint[nbins]; }
-
-        static uint[] mapper(Tuple!(ulong, Bins!T) arg)
-        {
-            auto r = zero(arg[1].n);
-            auto rng = Rng(unpredictableSeed);
-            auto dist = DistTest();
-
-            foreach(_; 0 .. arg[0])
-                r[arg[1].index(dist.sample(rng))] ++;
-            
-            return r;
-        }
-
-        return mapper(tuple(nsamples, bins));
-    }
-}
-
 double goodnessOfFitImpl(T, DistTest, Rng)(ulong nsamples)
 {
     auto nbins = to!size_t(nsamples ^^ (3.0 / 5.0));
