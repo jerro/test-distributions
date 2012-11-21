@@ -114,7 +114,7 @@ template histogram(DistTest, Rng)
     }
 }
 
-void goodnessOfFit(T, DistTest, Rng)(ulong nsamples)
+double goodnessOfFitImpl(T, DistTest, Rng)(ulong nsamples)
 {
     auto nbins = to!size_t(nsamples ^^ (3.0 / 5.0));
     T expected = to!T(nsamples) / nbins;
@@ -143,8 +143,21 @@ void goodnessOfFit(T, DistTest, Rng)(ulong nsamples)
     foreach(h; histograms)
         hist[] += h[]; 
 
-    stderr.writeln(nbins); 
-    writeln(chiSquareFit(hist, repeat(1.0)));
+    return chiSquareFit(hist, repeat(1.0));
+}
+
+auto goodnessOfFit(T, DistTest, Rng)(ulong samples)
+{
+    double sum = 0;
+    double n = 0;
+    do
+    {
+        sum += log10(goodnessOfFitImpl!(T, DistTest, Rng)(samples));
+        n += 1;
+    }
+    while(sum / n > -6 && sum / n < -1);
+
+    return 10 ^^ (sum / n);
 }
 
 void speed(T, DistTest, Rng)(ulong nsamples)
@@ -175,12 +188,12 @@ void main(string[] args)
     alias NormalZigguratEngine64 Engine;
     //alias NormalBoxMullerEngine Engine;
     alias NormalTest!(T, Engine, true) DistTest;
-    alias Xorshift128 Rng;
-    //alias Mt19937 Rng;
+    //alias Xorshift128 Rng;
+    alias Mt19937 Rng;
 
     if(testSpeed)
         speed!(T, DistTest, Rng)(nsamples);
     else
-        goodnessOfFit!(T, DistTest, Rng)(nsamples);
+        writeln(goodnessOfFit!(T, DistTest, Rng)(nsamples));
 }
 
