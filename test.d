@@ -100,9 +100,9 @@ auto goodnessOfFit(T, DistTest, Rng)(ulong samples)
         n += 1;
         stderr.writefln("current average of log10(p): %s", avg());
     }
-    while(avg() > -6 && avg() < -1);
+    while(avg() > -6 && avg() < -1 && n < 5);
 
-    return 10 ^^ avg();
+    return avg() > -2;
 }
 
 void speed(T, DistTest, Rng)(ulong nsamples)
@@ -127,7 +127,7 @@ void main(string[] args)
     getopt(args, "s", &testSpeed, "e", &testError);
    
     auto nsamples = args.length > 1 ? 
-        to!ulong(args[1]) * 1000 : 1000_000_000L;
+        to!ulong(args[1]) * 1000 : 0;
    
     alias float T; 
     alias NormalZigguratEngine64 Engine;
@@ -139,6 +139,21 @@ void main(string[] args)
     if(testSpeed)
         speed!(T, DistTest, Rng)(nsamples);
     else
-        writeln(goodnessOfFit!(T, DistTest, Rng)(nsamples));
+    {
+        if(nsamples)
+            writeln(goodnessOfFit!(T, DistTest, Rng)(nsamples) ? 
+                "succeeded" : "failed");
+        else
+        {
+            int i = 10;
+            while(goodnessOfFit!(T, DistTest, Rng)(2UL ^^ i))
+            {
+                stderr.writefln("The test for nsamples == 2 ^^ %s succeeded", i);
+                i++;
+            }
+
+            writefln("Failed at nsamples == 2 ^^ %s", i);
+        }
+    }
 }
 
