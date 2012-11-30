@@ -3,7 +3,23 @@ import std.stdio, std.mathspecial, std.algorithm, std.range, std.conv,
     std.parallelism, std.getopt;
 
 import core.bitop;
-import dstats.all;
+
+auto chiSquareP(R1, R2)(R1 sampled, R2 expected)
+{
+    auto scale = 
+        sampled.reduce!"a+b".to!double / expected.reduce!"a+b".to!double;
+
+    auto chisq = zip(sampled, expected, scale.repeat)
+        .map!(a => (a[0] - a[1] * a[2]) ^^ 2 / (a[1] * a[2]))
+        .reduce!"a+b";
+
+    return gammaIncompleteCompl((sampled.length - 1) / 2, chisq / 2);
+}
+
+real normalCDF(real x, real mean, real sigma)
+{
+    return (1 + erf((x - mean) / (SQRT2 * sigma))) / 2;
+}
 
 mixin template NormalMixin()
 {
@@ -13,19 +29,6 @@ mixin template NormalMixin()
     } 
 }
 
-struct DstatsNormalTest(T)
-{
-    enum T mean = 0;
-    enum T sigma = 1;
-
-    T sample(Rng)(ref Rng rng) @system
-    {
-        return rNorm(mean, sigma, rng);
-    }
-    
-    mixin NormalMixin!();
-}
-
 struct Uniform(T)
 {
     enum T width = 0.9;
@@ -33,8 +36,9 @@ struct Uniform(T)
 
     T sample(Rng)(ref Rng rng) @system
     {
-        return uniform(0.to!T, width.to!T, rng);
-        //return accurateUniformFloat(width.to!T, rng);
+        return uniform(0, width, rng);
+        // return fastUniformFloat!T(rng) * width;
+        // return accurateUniformFloat(width.to!T, rng);
     }
 
     real cdf(real x){ return x * invWidth; }
@@ -93,7 +97,8 @@ auto binProbabilities(T, Cdf)(Cdf cdf, size_t nbins)
     double[] r;
     double prevCdf = 0;
     foreach(i; 1 .. nbins)
-    {
+    // wrapping the body in a delegate avoids a segfault in f below
+    (i){
         auto f = (real a) => cdf(a) - i.to!real / nbins;
         T x = autoFindRoot(f);
         if(f(x) < 0)
@@ -102,7 +107,7 @@ auto binProbabilities(T, Cdf)(Cdf cdf, size_t nbins)
         double currCdf = cdf(x); 
         r ~= currCdf - prevCdf;
         prevCdf = currCdf;
-    }
+    }(i);
     
     r ~= 1 - prevCdf;
     return r;
@@ -122,9 +127,9 @@ double goodnessOfFitImpl(T, DistTest, Rng)(ulong nsamples)
             hist[to!size_t(dt.cdf(dt.sample(rng)) * nbins)]++;
     }
 
-    import core.thread;
+    import core.thread, core.cpuid;
 
-    enum nworkers = 4;
+    auto nworkers = coresPerCPU;
     auto histograms = nbins.repeat(nworkers).map!"new uint[a]".array;
 
     foreach(h; histograms)
@@ -135,15 +140,9 @@ double goodnessOfFitImpl(T, DistTest, Rng)(ulong nsamples)
     thread_joinAll();
 
     foreach(h; histograms)
-        hist[] += h[]; 
+        hist[] += h[];
 
-    auto prob = binProbabilities!T(&(DistTest()).cdf, nbins);
-    
-    static import std.file;
-    std.file.write("counts.bin", cast(void[]) hist);
-    std.file.write("prob.bin", cast(void[])(prob.map!(to!float).array));
-
-    return chiSquareFit(hist, prob);
+    return chiSquareP(hist, binProbabilities!T(&(DistTest()).cdf, nbins));
 }
 
 auto goodnessOfFit(T, DistTest, Rng)(ulong samples)
@@ -189,18 +188,17 @@ void main(string[] args)
     bool testError;
     getopt(args, "s", &testSpeed, "e", &testError);
    
-    auto nsamples = args.length > 1 ? 
-        2 ^^ to!ulong(args[1]) : 0;
+    auto nsamples = args.length > 1 ?  2 ^^ to!ulong(args[1]) : 0;
    
-    alias float T; 
-    alias NormalZigguratEngine32 Engine;
-    //alias NormalBoxMullerEngine Engine;
+    alias double T; 
+    //alias NormalZigguratEngine128 Engine;
+    alias NormalBoxMullerEngine Engine;
    
-    //alias Uniform!float DistTest; 
-    alias NormalTest!(T, Engine, true) DistTest;
+    //alias Uniform!T DistTest; 
+    alias NormalTest!(T, Engine, false) DistTest;
     
-    alias Xorshift128 Rng;
-    //alias Mt19937 Rng;
+    //alias Xorshift128 Rng;
+    alias Mt19937 Rng;
 
     if(testSpeed)
         speed!(T, DistTest, Rng)(nsamples);
