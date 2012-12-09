@@ -1,13 +1,27 @@
-import std.stdio, std.mathspecial, std.algorithm, std.range, std.conv, 
+import std.stdio, std.algorithm, std.range, std.conv,  std.math,
     std.traits, std.numeric, std.random, std.typecons, std.typetuple,
-    std.parallelism, std.getopt;
+    std.parallelism, std.getopt, std.mathspecial : gammaIncompleteCompl;
 
 import core.bitop;
+import counts;
+
+
+
+version(GNU)
+    version = glibc;
+else version(linux)
+    version = glibc;
+   
+// glibc contains erf function and it's much faster than the one in Phobos 
+version(glibc)
+    extern(C) double erf(double);
+else 
+    import std.mathspecial : erf;
+    
 
 auto chiSquareP(R1, R2)(R1 sampled, R2 expected)
 {
-    auto scale = 
-        sampled.reduce!"a+b".to!double / expected.reduce!"a+b".to!double;
+    auto scale = reduce!"a+b"(0.0, sampled) / reduce!"a+b"(0.0, expected);
 
     auto chisq = zip(sampled, expected, scale.repeat)
         .map!(a => (a[0] - a[1] * a[2]) ^^ 2 / (a[1] * a[2]))
@@ -16,16 +30,11 @@ auto chiSquareP(R1, R2)(R1 sampled, R2 expected)
     return gammaIncompleteCompl((sampled.length - 1) / 2, chisq / 2);
 }
 
-real normalCDF(real x, real mean, real sigma)
-{
-    return (1 + erf((x - mean) / (SQRT2 * sigma))) / 2;
-}
-
 mixin template NormalMixin()
 {
     real cdf(real x)
     {
-        return normalCDF(x, mean, sigma); 
+        return 0.5 * (1 + erf(SQRT1_2 * x)); 
     } 
 }
 
@@ -113,24 +122,35 @@ auto binProbabilities(T, Cdf)(Cdf cdf, size_t nbins)
     return r;
 }
 
+void increment(uint[] a, size_t i) { a[i]++; }
+
 double goodnessOfFitImpl(T, DistTest, Rng)(ulong nsamples)
 {
+    alias Counts!2 Hist;
+    //alias uint[] Hist;
+
     auto nbins = to!size_t(nsamples ^^ (3.0 / 5.0));
     T expected = to!T(nsamples) / nbins;
     auto hist = new uint[nbins];
    
-    static void worker(uint[] hist, size_t nbins, size_t nsamples)
+    static void worker(Hist hist, size_t nbins, size_t nsamples)
     {  
         auto rng = Rng(unpredictableSeed);
         auto dt = DistTest();
         foreach(i; 0 .. nsamples)
-            hist[to!size_t(dt.cdf(dt.sample(rng)) * nbins)]++;
+            hist.increment(cast(size_t)(dt.cdf(dt.sample(rng)) * nbins));
     }
 
     import core.thread, core.cpuid;
 
-    auto nworkers = coresPerCPU;
-    auto histograms = nbins.repeat(nworkers).map!"new uint[a]".array;
+    // core.cpuid doesn't work with GDC yet
+    version(GNU)
+        auto nworkers = 4;
+    else
+        auto nworkers = threadsPerCPU;
+
+    auto histograms = 
+        nbins.repeat(nworkers).map!(n => Hist(n)).array;
 
     foreach(h; histograms)
     (h){
@@ -140,9 +160,9 @@ double goodnessOfFitImpl(T, DistTest, Rng)(ulong nsamples)
     thread_joinAll();
 
     foreach(h; histograms)
-        hist[] += h[];
+        hist[] += h[][];
 
-    return chiSquareP(hist, binProbabilities!T(&(DistTest()).cdf, nbins));
+    return chiSquareP(hist, repeat(1.0).take(hist.length));//binProbabilities!T(&(DistTest()).cdf, nbins));
 }
 
 auto goodnessOfFit(T, DistTest, Rng)(ulong samples)
@@ -156,7 +176,7 @@ auto goodnessOfFit(T, DistTest, Rng)(ulong samples)
         n += 1;
         stderr.writefln("current average of log10(p): %s", avg());
     }
-    while(avg() > -6 && avg() < -1 && n < 5);
+    while(avg() > -6 && avg() < -1 && n < 10);
 
     return avg() >= -1;
 }
@@ -191,14 +211,14 @@ void main(string[] args)
     auto nsamples = args.length > 1 ?  2 ^^ to!ulong(args[1]) : 0;
    
     alias double T; 
-    //alias NormalZigguratEngine128 Engine;
-    alias NormalBoxMullerEngine Engine;
+    alias NormalZigguratEngine128 Engine;
+    //alias NormalBoxMullerEngine Engine;
    
     //alias Uniform!T DistTest; 
     alias NormalTest!(T, Engine, false) DistTest;
     
-    //alias Xorshift128 Rng;
-    alias Mt19937 Rng;
+    alias Xorshift128 Rng;
+    //alias Mt19937 Rng;
 
     if(testSpeed)
         speed!(T, DistTest, Rng)(nsamples);
