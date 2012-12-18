@@ -162,7 +162,7 @@ double goodnessOfFitImpl(T, DistTest, Rng)(ulong nsamples)
     foreach(h; histograms)
         hist[] += h[][];
 
-    return chiSquareP(hist, repeat(1.0).take(hist.length));//binProbabilities!T(&(DistTest()).cdf, nbins));
+    return chiSquareP(hist, binProbabilities!T(&(DistTest()).cdf, nbins));
 }
 
 auto goodnessOfFit(T, DistTest, Rng)(ulong samples)
@@ -210,7 +210,7 @@ void main(string[] args)
    
     auto nsamples = args.length > 1 ?  2 ^^ to!ulong(args[1]) : 0;
    
-    alias double T; 
+    alias float T; 
     alias NormalZigguratEngine128 Engine;
     //alias NormalBoxMullerEngine Engine;
    
