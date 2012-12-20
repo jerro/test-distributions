@@ -211,7 +211,7 @@ void main(string[] args)
     auto nsamples = args.length > 1 ?  2 ^^ to!ulong(args[1]) : 0;
    
     alias float T; 
-    alias NormalZigguratEngine128 Engine;
+    alias NormalZigguratEngine Engine;
     //alias NormalBoxMullerEngine Engine;
    
     //alias Uniform!T DistTest; 
