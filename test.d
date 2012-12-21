@@ -5,15 +5,8 @@ import std.stdio, std.algorithm, std.range, std.conv,  std.math,
 import core.bitop;
 import counts;
 
-
-
-version(GNU)
-    version = glibc;
-else version(linux)
-    version = glibc;
-   
 // glibc contains erf function and it's much faster than the one in Phobos 
-version(glibc)
+version(linux)
     extern(C) double erf(double);
 else 
     import std.mathspecial : erf;
@@ -91,7 +84,7 @@ auto autoFindRoot(F)(F f)
     T a = 0;
     T b = 1;
 
-    while(f(a) * f(b) > 0)
+    while(f(a) * f(b) >= 0)
     {
         auto dif = b - a;
         b += dif;
@@ -150,17 +143,17 @@ double goodnessOfFitImpl(T, DistTest, Rng)(ulong nsamples)
         auto nworkers = threadsPerCPU;
 
     auto histograms = 
-        nbins.repeat(nworkers).map!(n => Hist(n)).array;
+        (nbins + 1).repeat(nworkers).map!(n => Hist(n)).array;
 
     foreach(h; histograms)
     (h){
-        (new Thread(() => worker(h, nbins, nsamples / nworkers))).start(); 
+        (new Thread(() => worker(h, nbins, nsamples / nworkers / 20))).start(); 
     }(h);
 
     thread_joinAll();
 
     foreach(h; histograms)
-        hist[] += h[][];
+        hist[] += h[][0 .. hist.length];
 
     return chiSquareP(hist, binProbabilities!T(&(DistTest()).cdf, nbins));
 }
@@ -210,7 +203,7 @@ void main(string[] args)
    
     auto nsamples = args.length > 1 ?  2 ^^ to!ulong(args[1]) : 0;
    
-    alias float T; 
+    alias double T; 
     alias NormalZigguratEngine Engine;
     //alias NormalBoxMullerEngine Engine;
    

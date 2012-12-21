@@ -1,131 +1,79 @@
 module counts;
+import std.range, std.algorithm;
 
-import core.bitop, core.memory;
-
-struct SubByteArray(uint bitsPerElem) 
-if((bitsPerElem & (bitsPerElem - 1)) == 0)
+struct Counts(int M)
 {
-    enum uint elemMask = (1 << bitsPerElem) - 1;
-    enum uint elementsPerUInt = uint.sizeof * 8 / bitsPerElem;
+    alias ushort TBuffered;
+    enum log2BlockSize = 8 * TBuffered.sizeof;
+    enum size_t blockSize = cast(size_t) 1 << log2BlockSize; 
+    enum size_t bufferSize = blockSize * M;
 
-    enum uint iShift = bsr(elementsPerUInt);
-    enum uint iMask = elementsPerUInt - 1;
-
-    uint* data;
-    size_t n;
-   
-    this(size_t n)
+    struct PointerPair
     {
-        this.n = n;
-        auto len = (n >> iShift) + 1;
-        data = cast(uint*) GC.malloc(len * uint.sizeof);
-        data[0 .. len] = 0;
-    }
- 
-    uint opIndex(size_t i)
-    {
-        assert(i < n);
-
-        uint shift = (i & iMask) * bitsPerElem;
-        return (data[i >> iShift] >> shift) & elemMask;
-    }
-
-    void opIndexAssign(uint val, size_t i)
-    {
-        assert(i < n);
-        assert((val & ~elemMask) == 0);
-
-        uint shift = (i & iMask) * bitsPerElem;
-        auto p = &data[i >> iShift];
-        *p = (*p & ~(elemMask << shift)) | (val << shift);
-    }
-}
-
-import std.stdio, std.random, std.range, std.algorithm;
-
-unittest
-{
-    static void test(int nbits)()
-    {
-        int n = 1009;
-
-        auto a = new int[n];
-        auto s = SubByteArray!nbits(n);
-
-        foreach(_; 0 .. 10 * n)
+        this(TBuffered[] arr)
         {
-            auto i = uniform(0, n);
-            a[i] = (a[i] + 1) & s.elemMask; 
-            s[i] = (s[i] + 1) & s.elemMask; 
+            start = arr.ptr;
+            end = arr.ptr + arr.length; 
         }
 
-        foreach(i; 0 .. n)
-            assert(a[i] == s[i]);
+        TBuffered* start;
+        TBuffered* end;
     }
 
-    test!1();
-    test!2();
-    test!4();
-    test!8(); 
-}
-
-struct Counts(int bitsPerCachedElem)
-{
-    enum elementsPerCacheLine = 16;
-    
-    SubByteArray!bitsPerCachedElem cached;
-    uint* data;
-    size_t n;    
+    uint[] counts;
+    PointerPair[] buffers;
 
     this(size_t n)
     {
-        this.n = n;
-
-        auto len = (n / elementsPerCacheLine + 1) * elementsPerCacheLine;
-        data = cast(uint*) GC.malloc(len * uint.sizeof);
-        data[0 .. len] = 0; 
-        cached = typeof(cached)(len);        
-
+        counts = new uint[](n);
+        buffers = bufferSize
+            .repeat((n + blockSize - 1) / blockSize)
+            .map!(a => PointerPair(new TBuffered[a]))
+            .array;
     }
 
-    private void saveElement(size_t i)
+    void save(size_t i)
     {
-        data[i] += cached[i];
-        cached[i] = 0;
+        assert(i <= buffers.length);
+        assert(buffers[i].start <= buffers[i].end);
+        assert(buffers[i].start >= buffers[i].end - bufferSize);
+        
+        auto pp = buffers[i];
+        auto start = pp.end - bufferSize;
+        foreach(e; start[0 .. pp.start - start])
+            counts[(i << log2BlockSize) + e] ++;
+
+        buffers[i].start = start; 
     }
 
     void increment(size_t i)
     {
-        assert(i < n);
+        assert(i <= counts.length);
 
-        auto prev = cached[i];
-
-        if(prev == cached.elemMask)
-        {
-            // save this cache line
-
-            auto clStart = i & ~(elementsPerCacheLine - 1);
-            foreach(j; 0 .. elementsPerCacheLine)
-                saveElement(clStart + j); 
-            
-            prev = 0;
-        }
-
-        cached[i] = prev + 1;
+        auto iblock = i >> log2BlockSize;
+        auto start = buffers[iblock].start;
+        auto end = buffers[iblock].end;
+        *start = cast(TBuffered) i;
+        start++;
+        buffers[iblock].start = start;
+        if(start == end)
+            save(iblock);
     }
 
     auto opSlice()
     {
-        foreach(i; 0 .. n)
-            saveElement(i);
+        foreach(i; 0 .. buffers.length)
+            save(i);
 
-        return data[0 .. n];   
+        return counts;
     }
 }
 
 unittest
 {
-    auto n = 1009;
+    import std.random;
+
+    auto n = 1_299_827;
     
     auto c = Counts!2(n);
     auto a = new int[n];
@@ -142,19 +90,30 @@ unittest
 }
 
 version(BenchCounts)
+{
+    import std.stdio;
+
+    void increment(uint[] arr, size_t i)
+    {
+        arr[i]++;
+    }
+
     void main()
     {
         enum n = 1 << 24;
 
-        auto c = Counts!4(n);
+        version(all)
+            auto c = Counts!2(n);
+        else
+            auto c = new uint[](n);
 
         auto rand = 20935742;
-        
+
         foreach(i; 0 .. 1000_000_000)
         {
             c.increment(rand & (n - 1));
             rand = rand * 1664525 + 1013904223; 
         }
-
         writeln(c[][c[][0] % n]);
     }
+}
